@@ -95,18 +95,15 @@ where
             .try_lock()
             .map_err(|_| MultipartError::InternalBorrowError)?;
 
-        match Pin::new(&mut state.parser).poll_next(cx) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(Err(err))),
-            Poll::Ready(None) => return Poll::Ready(None),
+        match futures::ready!(Pin::new(&mut state.parser).poll_next(cx)) {
+            Some(Err(err)) => return Poll::Ready(Some(Err(err))),
+            None => return Poll::Ready(None),
             //If we have headers, we have reached the next file
-            Poll::Ready(Some(Ok(ParseOutput::Headers(headers)))) => {
+            Some(Ok(ParseOutput::Headers(headers))) => {
                 state.next_item = Some(headers);
                 return Poll::Ready(None);
             }
-            Poll::Ready(Some(Ok(ParseOutput::Bytes(bytes)))) => {
-                return Poll::Ready(Some(Ok(bytes)))
-            }
+            Some(Ok(ParseOutput::Bytes(bytes))) => return Poll::Ready(Some(Ok(bytes))),
         }
     }
 }
@@ -169,19 +166,18 @@ where
             })));
         }
 
-        match Pin::new(&mut state.parser).poll_next(cx) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(Err(err))),
-            Poll::Ready(None) => return Poll::Ready(None),
+        match futures::ready!(Pin::new(&mut state.parser).poll_next(cx)) {
+            Some(Err(err)) => return Poll::Ready(Some(Err(err))),
+            None => return Poll::Ready(None),
 
             //If we have headers, we have reached the next file
-            Poll::Ready(Some(Ok(ParseOutput::Headers(headers)))) => {
+            Some(Ok(ParseOutput::Headers(headers))) => {
                 return Poll::Ready(Some(Ok(MultipartField {
                     headers,
                     state: self_mut.state.clone(),
                 })));
             }
-            Poll::Ready(Some(Ok(ParseOutput::Bytes(_bytes)))) => {
+            Some(Ok(ParseOutput::Bytes(_bytes))) => {
                 //If we are returning bytes from this stream, then there is some error
                 return Poll::Ready(Some(Err(MultipartError::ShouldPollField)));
             }
