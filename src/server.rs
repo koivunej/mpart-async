@@ -320,8 +320,7 @@ where
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
                 } else {
-                    let expected =
-                        format!("--{}\\r\\n", String::from_utf8_lossy(&self_mut.boundary));
+                    let expected = format!("--{}\r\n", String::from_utf8_lossy(&self_mut.boundary));
                     let found =
                         String::from_utf8_lossy(&self_mut.buffer[..boundary_len + 4]).to_string();
 
@@ -603,7 +602,7 @@ mod tests {
 
         match val {
             Err(MultipartError::InvalidBoundary { expected, found }) => {
-                assert_eq!(expected, "--AaB03x\\r\\n");
+                assert_eq!(expected, "--AaB03x\r\n");
                 assert_eq!(found, "--InvalidB");
             }
             val => {
