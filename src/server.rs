@@ -2,6 +2,7 @@ use bytes::Bytes;
 use futures::Stream;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use httparse::Status;
+use std::error::Error as StdError;
 use std::mem;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -10,10 +11,11 @@ use thiserror::Error;
 
 use twoway::find_bytes;
 
+#[derive(Debug)]
 pub struct MultipartField<S, E>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: Into<anyhow::Error>,
+    E: StdError + 'static,
 {
     headers: HeaderMap<HeaderValue>,
     state: Arc<Mutex<MultipartState<S, E>>>,
@@ -22,13 +24,13 @@ where
 impl<S, E> MultipartField<S, E>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: Into<anyhow::Error>,
+    E: StdError + 'static,
 {
     pub fn headers(&self) -> &HeaderMap<HeaderValue> {
         &self.headers
     }
 
-    pub fn content_type<'a>(&'a self) -> Result<&'a str, MultipartError> {
+    pub fn content_type<'a>(&'a self) -> Result<&'a str, MultipartError<E>> {
         if let Some(val) = self.headers.get("content-type") {
             return val.to_str().map_err(|_| MultipartError::InvalidHeader);
         }
@@ -36,7 +38,7 @@ where
         Err(MultipartError::InvalidHeader)
     }
 
-    pub fn filename<'a>(&'a self) -> Result<&'a str, MultipartError> {
+    pub fn filename<'a>(&'a self) -> Result<&'a str, MultipartError<E>> {
         if let Some(val) = self.headers.get("content-disposition") {
             let string_val = val.to_str().map_err(|_| MultipartError::InvalidHeader)?;
             if let Some(filename) = get_dispo_param(&string_val, "filename") {
@@ -47,7 +49,7 @@ where
         Err(MultipartError::InvalidHeader)
     }
 
-    pub fn name<'a>(&'a self) -> Result<&'a str, MultipartError> {
+    pub fn name<'a>(&'a self) -> Result<&'a str, MultipartError<E>> {
         if let Some(val) = self.headers.get("content-disposition") {
             let string_val = val.to_str().map_err(|_| MultipartError::InvalidHeader)?;
             if let Some(filename) = get_dispo_param(&string_val, "name") {
@@ -81,9 +83,9 @@ fn get_dispo_param<'a>(input: &'a str, param: &str) -> Option<&'a str> {
 impl<S, E> Stream for MultipartField<S, E>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: Into<anyhow::Error>,
+    E: StdError + 'static,
 {
-    type Item = Result<Bytes, MultipartError>;
+    type Item = Result<Bytes, MultipartError<E>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let self_mut = &mut self.as_mut();
@@ -95,9 +97,7 @@ where
 
         match Pin::new(&mut state.parser).poll_next(cx) {
             Poll::Pending => return Poll::Pending,
-            Poll::Ready(Some(Err(err))) => {
-                return Poll::Ready(Some(Err(MultipartError::Stream(err.into()))))
-            }
+            Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(Err(err))),
             Poll::Ready(None) => return Poll::Ready(None),
             //If we have headers, we have reached the next file
             Poll::Ready(Some(Ok(ParseOutput::Headers(headers)))) => {
@@ -112,19 +112,21 @@ where
 }
 
 //This is our state we use to drive the parser.  The `next_item` is there just for headers if there are more in the request
+#[derive(Debug)]
 struct MultipartState<S, E>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: Into<anyhow::Error>,
+    E: StdError + 'static,
 {
     parser: MultipartParser<S, E>,
     next_item: Option<HeaderMap<HeaderValue>>,
 }
 
+#[derive(Debug)]
 pub struct MultipartStream<S, E>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: Into<anyhow::Error>,
+    E: StdError + 'static,
 {
     state: Arc<Mutex<MultipartState<S, E>>>,
 }
@@ -132,7 +134,7 @@ where
 impl<S, E> MultipartStream<S, E>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: Into<anyhow::Error>,
+    E: StdError + 'static,
 {
     /// Construct a MultipartStream given a boundary
     pub fn new<I: Into<Bytes>>(boundary: I, stream: S) -> Self {
@@ -148,9 +150,9 @@ where
 impl<S, E> Stream for MultipartStream<S, E>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: Into<anyhow::Error>,
+    E: StdError + 'static,
 {
-    type Item = Result<MultipartField<S, E>, MultipartError>;
+    type Item = Result<MultipartField<S, E>, MultipartError<E>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let self_mut = &mut self.as_mut();
@@ -169,9 +171,7 @@ where
 
         match Pin::new(&mut state.parser).poll_next(cx) {
             Poll::Pending => return Poll::Pending,
-            Poll::Ready(Some(Err(err))) => {
-                return Poll::Ready(Some(Err(MultipartError::Stream(err.into()))))
-            }
+            Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(Err(err))),
             Poll::Ready(None) => return Poll::Ready(None),
 
             //If we have headers, we have reached the next file
@@ -190,7 +190,7 @@ where
 }
 
 #[derive(Error, Debug)]
-pub enum MultipartError {
+pub enum MultipartError<E: StdError + 'static> {
     #[error("Invalid Boundary. (expected {expected:?}, found {found:?})")]
     InvalidBoundary { expected: String, found: String },
     #[error("Incomplete Headers")]
@@ -206,14 +206,15 @@ pub enum MultipartError {
     #[error(transparent)]
     HeaderParse(#[from] httparse::Error),
     #[error(transparent)]
-    Stream(#[from] anyhow::Error),
+    Stream(E),
 }
 
 //This parses the multipart and then streams out headers & bytes
+#[derive(Debug)]
 pub struct MultipartParser<S, E>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: Into<anyhow::Error>,
+    E: StdError + 'static,
 {
     boundary: Bytes,
     buffer: Vec<u8>,
@@ -225,7 +226,7 @@ where
 impl<S, E> MultipartParser<S, E>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: Into<anyhow::Error>,
+    E: StdError + 'static,
 {
     pub fn new<I: Into<Bytes>>(boundary: I, stream: S) -> Self {
         Self {
@@ -238,7 +239,7 @@ where
     }
 
     //Return a poll if the stream is finished, or pending if we're waiting for our buffer
-    fn return_poll(&mut self) -> Poll<Option<Result<ParseOutput, MultipartError>>> {
+    fn return_poll(&mut self) -> Poll<Option<Result<ParseOutput, MultipartError<E>>>> {
         if self.stream_finished {
             self.state = State::Finished;
             return Poll::Ready(None);
@@ -250,7 +251,9 @@ where
 
 const NUM_HEADERS: usize = 16;
 
-fn get_headers(buffer: &[u8]) -> Result<HeaderMap<HeaderValue>, MultipartError> {
+fn get_headers<E: StdError + 'static>(
+    buffer: &[u8],
+) -> Result<HeaderMap<HeaderValue>, MultipartError<E>> {
     let mut headers = [httparse::EMPTY_HEADER; NUM_HEADERS];
 
     let idx = match httparse::parse_headers(&buffer, &mut headers)? {
@@ -276,9 +279,9 @@ fn get_headers(buffer: &[u8]) -> Result<HeaderMap<HeaderValue>, MultipartError> 
 impl<S, E> Stream for MultipartParser<S, E>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: Into<anyhow::Error>,
+    E: StdError,
 {
-    type Item = Result<ParseOutput, MultipartError>;
+    type Item = Result<ParseOutput, MultipartError<E>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let self_mut = &mut self.as_mut();
@@ -288,7 +291,7 @@ where
             match Pin::new(&mut self_mut.stream).poll_next(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Some(Err(err))) => {
-                    return Poll::Ready(Some(Err(MultipartError::Stream(err.into()))))
+                    return Poll::Ready(Some(Err(MultipartError::Stream(err))))
                 }
                 Poll::Ready(maybe_bytes) => {
                     match maybe_bytes {
