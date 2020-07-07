@@ -293,6 +293,7 @@ where
                     self_mut.stream_finished = true;
 
                     if self_mut.buffer.len() == 0 {
+                        // FIXME: are all states good to stop at?
                         return Poll::Ready(None);
                     }
                 }
