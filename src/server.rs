@@ -665,17 +665,15 @@ whale\r\n\
             Err(e) => panic!("unexpected: {}", e),
         };
 
-        let first = block_on(part.next()).unwrap().unwrap();
-        let second = block_on(part.next()).unwrap().unwrap();
-        let third = block_on(part.next()).unwrap().unwrap();
-
         let mut buffer = BytesMut::new();
-        buffer.put(first);
-        buffer.put(second);
-        buffer.put(third);
 
-        let fourth = block_on(part.next());
-        assert!(fourth.is_none());
+        loop {
+            match block_on(part.next()) {
+                Some(Ok(bytes)) => buffer.put(bytes),
+                Some(Err(e)) => panic!("unexpected {}", e),
+                None => break,
+            }
+        }
 
         let nth = block_on(read.next());
         assert!(nth.is_none());
