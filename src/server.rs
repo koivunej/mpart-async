@@ -288,27 +288,16 @@ where
 
         //The stream might be finished but we might not be
         if !self_mut.stream_finished {
-            match Pin::new(&mut self_mut.stream).poll_next(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(Err(err))) => {
-                    return Poll::Ready(Some(Err(MultipartError::Stream(err))))
+            match futures::ready!(Pin::new(&mut self_mut.stream).poll_next(cx)) {
+                Some(Err(err)) => return Poll::Ready(Some(Err(MultipartError::Stream(err)))),
+                Some(Ok(bytes)) => {
+                    self_mut.buffer.extend_from_slice(&bytes);
                 }
-                Poll::Ready(maybe_bytes) => {
-                    match maybe_bytes {
-                        Some(Ok(bytes)) => {
-                            self_mut.buffer.extend_from_slice(&bytes);
-                        }
-                        Some(Err(_)) => {
-                            //Unreachable, covered by match statement above.
-                            unreachable!();
-                        }
-                        None => {
-                            self_mut.stream_finished = true;
+                None => {
+                    self_mut.stream_finished = true;
 
-                            if self_mut.buffer.len() == 0 {
-                                return Poll::Ready(None);
-                            }
-                        }
+                    if self_mut.buffer.len() == 0 {
+                        return Poll::Ready(None);
                     }
                 }
             }
