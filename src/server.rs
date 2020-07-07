@@ -610,4 +610,51 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn zero_read() {
+        let input = b"\
+----------------------------332056022174478975396798\r\n\
+Content-Disposition: form-data; name=\"file\"\r\n\
+Content-Type: application/octet-stream\r\n\
+\r\n\
+\r\n\
+\r\n\
+dolphin\n\
+whale\r\n\
+----------------------------332056022174478975396798--\r\n";
+
+        let boundary = "--------------------------332056022174478975396798";
+
+        let mut read = MultipartStream::new(boundary, ByteStream::new(input));
+
+        let mut part = match block_on(read.next()).unwrap() {
+            Ok(mf) => {
+                assert_eq!(mf.name().unwrap(), "file");
+                assert_eq!(mf.content_type().unwrap(), "application/octet-stream");
+                mf
+            }
+            Err(e) => panic!("unexpected: {}", e),
+        };
+
+        let first = block_on(part.next()).unwrap().unwrap();
+
+        print!("first: ");
+        for b in first.as_ref() {
+            print!("{:02x}", b);
+        }
+        println!();
+        println!("first: {:?}", String::from_utf8_lossy(first.as_ref()));
+
+        let second = block_on(part.next());
+        println!("second: {:02x?}", second); // this is empty
+
+        let third = block_on(part.next());
+        println!("third: {:02x?}", third); // this is empty
+
+        let fourth = block_on(read.next());
+        println!("fourth: {:02x?}", fourth.unwrap().unwrap()); // this is error
+
+        assert_eq!(first.len(), 8 + 5);
+    }
 }
