@@ -22,6 +22,10 @@ impl ByteStream {
             bytes: Some(buf.freeze()),
         }
     }
+
+    pub fn with_slice_increment(mut self, count: usize) -> SlicedByteStream {
+        SlicedByteStream(self.bytes.take(), count)
+    }
 }
 
 impl Stream for ByteStream {
@@ -29,6 +33,30 @@ impl Stream for ByteStream {
 
     fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Poll::Ready(self.as_mut().bytes.take().map(|val| Ok(val)))
+    }
+}
+
+pub struct SlicedByteStream(Option<Bytes>, usize);
+
+impl Stream for SlicedByteStream {
+    type Item = Result<Bytes, ()>;
+
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let amt = self.1;
+
+        let ret = match &mut self.as_mut().0 {
+            Some(ref mut b) => Some(b.split_to(amt)),
+            None => None,
+        };
+
+        let ret = if let Some(0) = ret.as_ref().map(|x| x.len()) {
+            self.as_mut().0 = None;
+            None
+        } else {
+            ret
+        };
+
+        Poll::Ready(ret.map(|b| Ok(b)))
     }
 }
 
