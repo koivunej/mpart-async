@@ -3,6 +3,7 @@ use futures::Stream;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use httparse::Status;
 use std::error::Error as StdError;
+use std::fmt;
 use std::mem;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -10,6 +11,26 @@ use std::task::{Context, Poll};
 use thiserror::Error;
 
 use twoway::find_bytes;
+
+#[derive(PartialEq, Eq)]
+struct DefaultEscaper<'a>(&'a [u8]);
+
+impl fmt::Display for DefaultEscaper<'_> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for b in self.0 {
+            for c in std::ascii::escape_default(*b) {
+                write!(fmt, "{}", c as char)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for DefaultEscaper<'_> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "{}", self)
+    }
+}
 
 #[derive(Debug)]
 pub struct MultipartField<S, E>
@@ -398,11 +419,15 @@ where
                                 mem::replace(&mut self_mut.buffer, Vec::new()),
                             )))));
                         }
+                    } else {
+                        let mut buffer = self_mut.buffer.split_off(idx + 1);
+                        mem::swap(&mut self_mut.buffer, &mut buffer);
+                        return Poll::Ready(Some(Ok(ParseOutput::Bytes(buffer.into()))));
                     }
                 }
 
                 //If we didn't find an `\r` in any of the multiparts, just take out the buffer and return as bytes
-                let buffer = mem::replace(&mut self_mut.buffer, Vec::new());
+                let buffer = mem::take(&mut self_mut.buffer);
 
                 return Poll::Ready(Some(Ok(ParseOutput::Bytes(Bytes::from(buffer)))));
             }
@@ -613,6 +638,9 @@ mod tests {
 
     #[test]
     fn zero_read() {
+        use super::DefaultEscaper;
+        use bytes::{BufMut, BytesMut};
+
         let input = b"\
 ----------------------------332056022174478975396798\r\n\
 Content-Disposition: form-data; name=\"file\"\r\n\
@@ -638,23 +666,23 @@ whale\r\n\
         };
 
         let first = block_on(part.next()).unwrap().unwrap();
+        let second = block_on(part.next()).unwrap().unwrap();
+        let third = block_on(part.next()).unwrap().unwrap();
 
-        print!("first: ");
-        for b in first.as_ref() {
-            print!("{:02x}", b);
-        }
-        println!();
-        println!("first: {:?}", String::from_utf8_lossy(first.as_ref()));
+        let mut buffer = BytesMut::new();
+        buffer.put(first);
+        buffer.put(second);
+        buffer.put(third);
 
-        let second = block_on(part.next());
-        println!("second: {:02x?}", second); // this is empty
+        let fourth = block_on(part.next());
+        assert!(fourth.is_none());
 
-        let third = block_on(part.next());
-        println!("third: {:02x?}", third); // this is empty
+        let nth = block_on(read.next());
+        assert!(nth.is_none());
 
-        let fourth = block_on(read.next());
-        println!("fourth: {:02x?}", fourth.unwrap().unwrap()); // this is error
-
-        assert_eq!(first.len(), 8 + 5);
+        assert_eq!(
+            DefaultEscaper(buffer.as_ref()),
+            DefaultEscaper(b"\r\n\r\ndolphin\nwhale")
+        );
     }
 }
