@@ -220,7 +220,7 @@ where
         let mut rng = thread_rng();
 
         let boundary: String = std::iter::repeat(())
-            .map(|()| rng.sample(Alphanumeric))
+            .map(|()| rng.sample(Alphanumeric) as char)
             .take(60)
             .collect();
 
